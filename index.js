@@ -1,6 +1,6 @@
 var restify = require('restify');
 var oracledb = require('oracledb');
-var dbConfig = require('./metaconfig.js');//require('./dbconfig.js');
+var dbConfig = require('./dbconfig.js');
 //var metaConfig = require('./metaconfig.js');
 
 var metaDataSql = "SELECT dbms_lob.substr(source, 4000, 1) source, source_type " +
