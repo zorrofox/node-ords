@@ -3,11 +3,14 @@ var oracledb = require('oracledb');
 var dbConfig = require('./dbconfig.js');
 //var metaConfig = require('./metaconfig.js');
 
-var metaDataSql = "SELECT dbms_lob.substr(source, 4000, 1) source, source_type, handler_id " +
-	"FROM apex_rest_resource_handlers " +
-	"WHERE workspace = :workspace " +
-	"AND method = :method " +
-	"AND uri_template = :template";
+var metaDataSql = "SELECT dbms_lob.substr(h.source, 4000, 1) source, h.source_type, h.handler_id " +
+	"FROM apex_rest_resource_handlers h, apex_rest_resource_templates t, apex_rest_resource_modules m " +
+	"WHERE t.template_id = h.template_id " +
+	"AND t.module_id = m.module_id " +
+	"AND h.workspace = :workspace " +
+	"AND h.method = :method " +
+	"AND h.uri_template = :template " +
+	"AND m.uri_prefix = :prefix";
 
 var metaDataSqlParam = "SELECT dbms_lob.substr(source, 4000, 1) source, source_type, handler_id " +
 	"FROM apex_rest_resource_handlers " +
@@ -87,8 +90,10 @@ function handleRequest(req, res, next) {
 
 	if (req.params[0] !== undefined && req.params[1] !== undefined) {
 		var workspace = req.params[0].toUpperCase();
-		var template = req.params[1].split('/')[0] + '/';
-		var query = req.params[1].split('/')[1];
+		var uri = req.params[1].split('/');
+		var prefix = uri[0] + '/';
+		var template = uri[1];
+		var query = uri[2];
 		var method = req.route.method.toUpperCase();
 
 	} else {
@@ -104,8 +109,9 @@ function handleRequest(req, res, next) {
 				restServerError(res, err);
 				return;
 			}
+			//console.log(workspace + ' ' + method + ' ' + template + ' ' + prefix);
 			connection.execute(
-				query ? metaDataSqlParam : metaDataSql, [workspace, method, template], {
+				query ? metaDataSqlParam : metaDataSql, [workspace, method, template, prefix], {
 					outFormat: oracledb.OBJECT
 				},
 				function(err, result) {
@@ -126,6 +132,7 @@ function handleRequest(req, res, next) {
 					}
 
 					if (result.rows.length === 0 || result.rows.length === undefined) {
+						var err = {};
 						err.custMessage = 'Metadata no data found!';
 						restServerError(res, err);
 						return;
@@ -241,7 +248,7 @@ function handleRequest(req, res, next) {
 					if (result4data.rows)
 						res.send(result4data.rows);
 					if (result4data.outBinds)
-						res.send(result4data.outBinds);
+						res.send(result4data.outBinds.out);
 
 				}
 			});
