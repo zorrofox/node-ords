@@ -12,11 +12,14 @@ var metaDataSql = "SELECT dbms_lob.substr(h.source, 4000, 1) source, h.source_ty
 	"AND h.uri_template = :template " +
 	"AND m.uri_prefix = :prefix";
 
-var metaDataSqlParam = "SELECT dbms_lob.substr(source, 4000, 1) source, source_type, handler_id " +
-	"FROM apex_rest_resource_handlers " +
-	"WHERE workspace = :workspace " +
-	"AND method = :method " +
-	"AND uri_template LIKE :template || '{%}'";
+var metaDataSqlParam = "SELECT dbms_lob.substr(h.source, 4000, 1) source, h.source_type, h.handler_id " +
+	"FROM apex_rest_resource_handlers h, apex_rest_resource_templates t, apex_rest_resource_modules m " +
+	"WHERE t.template_id = h.template_id " +
+	"AND t.module_id = m.module_id " +
+	"AND h.workspace = :workspace " +
+	"AND h.method = :method " +
+	"AND h.uri_template LIKE :template || '/{%}'" +
+	"AND m.uri_prefix = :prefix";
 
 var paramsSql = "SELECT parameter_name, param_type " +
 	"FROM apex_rest_resource_parameters " +
@@ -45,6 +48,7 @@ server.listen(8081, function() {
 
 
 function restServerError(res, err) {
+	err.message = err.custMessage + '  Error message: ' + err.message;
 	console.error(err);
 	res.send(503, err);
 }
@@ -73,15 +77,21 @@ function releaseConnect(conn, res) {
 }
 
 function getParamsFunction(req, param, type) {
-	if (type === 'Int') {
+	if (type === 'Int' || type === 'Long' || type === 'Double') {
 		var val = req.params[param] ? Number(req.params[param]) : Number(req.header(param));
 	} else {
-		var val = req.params[param] ? req.params[param] : req.header(param);
+		if (type === 'Timestamp') {
+			//var val = new Date(req.params[param]);
+			var val = req.params[param] ? req.params[param] : req.header(param);;
+		} else {
+			var val = req.params[param] ? req.params[param] : req.header(param);
+		}
 	}
 	return val;
 }
 
 function handleRequest(req, res, next) {
+	res.charSet('utf-8');
 	if (cb.err) {
 		err.custMessage = 'Create Oracle DB Pool for Meta Data Error! Error Message';
 		restServerError(res, err);
@@ -94,6 +104,8 @@ function handleRequest(req, res, next) {
 		var prefix = uri[0] + '/';
 		var template = uri[1];
 		var query = uri[2];
+		// Logic for tempalte end with slash but have no query strings
+		if (!query && req.params[1].substr(req.params[1].length - 1) === '/') template = template + '/';
 		var method = req.route.method.toUpperCase();
 
 	} else {
@@ -102,6 +114,7 @@ function handleRequest(req, res, next) {
 		return;
 	}
 	var that = {};
+	//Connect for meta data
 	cb.pool.getConnection(
 		function(err, connection) {
 			if (err) {
@@ -109,9 +122,10 @@ function handleRequest(req, res, next) {
 				restServerError(res, err);
 				return;
 			}
-			//console.log(workspace + ' ' + method + ' ' + template + ' ' + prefix);
+			//console.log(workspace + ' ' + method + ' ' + template + ' ' + prefix + ' ' + query);
+			var querySql = query ? metaDataSqlParam : metaDataSql;
 			connection.execute(
-				query ? metaDataSqlParam : metaDataSql, [workspace, method, template, prefix], {
+				querySql , [workspace, method, template, prefix], {
 					outFormat: oracledb.OBJECT
 				},
 				function(err, result) {
@@ -126,13 +140,17 @@ function handleRequest(req, res, next) {
 						});
 
 					if (err) {
-						err.custMessage = 'Connect execution error';
+						err.errorSql = querySql;
+						err.sqlParams = [workspace, method, template, prefix];
+						err.custMessage = 'Meta data connect execution error';
 						restServerError(res, err);
 						return;
 					}
 
 					if (result.rows.length === 0 || result.rows.length === undefined) {
 						var err = {};
+						err.errorSql = querySql;
+						err.sqlParams = [workspace, method, template, prefix];
 						err.custMessage = 'Metadata no data found!';
 						restServerError(res, err);
 						return;
@@ -145,6 +163,8 @@ function handleRequest(req, res, next) {
 
 				});
 		});
+
+	// Connect for Params
 
 	that.paramsConn = function() {
 		cb.pool.getConnection(
@@ -161,6 +181,8 @@ function handleRequest(req, res, next) {
 				function execFunc(err, result) {
 					releaseConnect(conn4params, res);
 					if (err) {
+						err.errorSql = paramsSql;
+						err.sqlParams = that.metaData[0].HANDLER_ID;
 						err.custMessage = 'Params Connect execution error';
 						restServerError(res, err);
 						return;
@@ -173,6 +195,8 @@ function handleRequest(req, res, next) {
 			});
 	};
 
+	// Connect for data
+
 	that.dataConnect = function() {
 		cb.pool.getConnection(
 			function(err, conn4data) {
@@ -182,8 +206,7 @@ function handleRequest(req, res, next) {
 					return;
 				}
 
-				var dataSql = that.metaData[0].SOURCE.replace('\n', ' ').replace(',', ' ');
-				//var varArr = dataSql.match(/:\w+/g);
+				var dataSql = that.metaData[0].SOURCE;
 				var valueArr = [query];
 				var valueObj = {};
 				var bindVar = {
@@ -200,7 +223,8 @@ function handleRequest(req, res, next) {
 							type = oracledb.STRING;
 						else {
 							if (that.params[i].PARAM_TYPE === 'Timestamp')
-								type = oracledb.DATE;
+								//TO-DO add some logic to support date value
+								type = oracledb.STRING;
 							else
 								type = oracledb.NUMBER;
 						}
@@ -213,6 +237,7 @@ function handleRequest(req, res, next) {
 				}
 
 				if (that.metaData[0].SOURCE_TYPE === 'PL/SQL') {
+
 					dataSql = 'DECLARE vc owa.vc_arr; page htp.htbuf_arr; num INTEGER := 99999999; BEGIN owa.init_cgi_env(vc); htp.init; ' +
 						dataSql + 'htp.get_page(page, num); :out := \'\'; FOR i in 4..page.last LOOP :out := :out || page(i); END LOOP; END;';
 
@@ -241,15 +266,24 @@ function handleRequest(req, res, next) {
 						});
 
 					if (err) {
+						err.errorSql = dataSql;
+						err.sqlParams = bindVar;
 						err.custMessage = 'Data Connect execution error';
 						restServerError(res, err);
 						return;
 					}
 					if (result4data.rows)
 						res.send(result4data.rows);
-					if (result4data.outBinds)
-						res.send(result4data.outBinds.out);
+					if (result4data.outBinds) {
+						try {
+							res.send(JSON.parse(result4data.outBinds.out));
+						} catch (err) {
+							err.custMessage = 'Your PL/SQL function do not return a json body!';
+							restServerError(res, err);
+							return;
+						}
 
+					}
 				}
 			});
 	};
