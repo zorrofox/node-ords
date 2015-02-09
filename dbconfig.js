@@ -56,9 +56,9 @@
  *****************************************************************************/
 
 module.exports = {
-	user: "hr",
-	password: "hr",
-	connectString: "192.168.59.103:49161/xe",
+	user: "apps",
+	password: "apps",
+	connectString: "m1-erp-devdb07.m1:1591/DEV7",
 	poolMax: 44,
 	poolMin: 2,
 	poolIncrement: 5,
