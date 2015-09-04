@@ -10,7 +10,8 @@
         "uri-template-lite": "~0.1.11",
 		"multer": "~0.1.8",
 		"hiredis": "^0.2.0",
-		"redis": "^0.12.1"
+		"redis": "^0.12.1",
+        "node-oracledb": "~1.1.0"
     },
     "description": "A node based listener option for Oracle Application Express (APEX).",
     "name": "node-apex-listener",
