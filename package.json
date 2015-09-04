@@ -11,9 +11,9 @@
 		"multer": "~0.1.8",
 		"hiredis": "^0.2.0",
 		"redis": "^0.12.1",
-        "node-oracledb": "~1.1.0"
+        "oracledb": "~1.1.0"
     },
     "description": "A node based listener option for Oracle Application Express (APEX).",
-    "name": "node-apex-listener",
-    "version": "0.1.0"
+    "name": "node-ords",
+    "version": "0.1.1"
 }
