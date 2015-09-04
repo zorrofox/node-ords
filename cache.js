@@ -160,12 +160,15 @@ function getParam(callback, dad) {
 								mset.push(JSON.stringify(result.rows[i]));
 							}
 							//console.log(mset);
-							client.mset(mset, function(err, res) {
-								if (err) {
-									console.error(err);
-									callback(err);
-								}
-							});
+							if (mset.length > 0){
+								client.mset(mset, function(err, res) {
+									if (err) {
+										console.error(err);
+										callback(err);
+									}
+								});
+							}
+							
 
 							callback(null);
 
