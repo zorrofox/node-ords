@@ -24,10 +24,10 @@
  *****************************************************************************/
 
 module.exports = {
-    port: 7000,
-    useCache: false,
+    port: 8000,
+    useCache: true,
 	redis: {
-		server: "localhost",
+		server: "grhuang.i3yatc.ng.0001.usw2.cache.amazonaws.com",
 		port: 6379,
 		options: {}
 	},
@@ -38,39 +38,17 @@ module.exports = {
         }
     ],
     dads: {
-        "ords-s": {
-            user: "polar",
-            password: "polardev2#",
-            connectString: "m1-erp-appdev2.m1.baidu.com:8541/PLDEV2",
+        "ords": {
+            user: "grhuang",
+            password: "welcome1",
+            connectString: "orcl.cn8whb38z0ub.us-west-2.rds.amazonaws.com/orcl",
             poolMax: 44,
             poolMin: 2,
             poolIncrement: 5,
             poolTimeout: 4,
             requestValidationFunction: "wwv_flow_epg_include_modules.authorize",
-            defaultPage: "ords-s"
-        },
-		/*"ords-m": {
-            user: "apps",
-            password: "apps",
-            connectString: "m1-erp-devdb07.m1:1591/DEV7",
-            poolMax: 44,
-            poolMin: 2,
-            poolIncrement: 1,
-            poolTimeout: 4,
-            requestValidationFunction: "wwv_flow_epg_include_modules.authorize",
-            defaultPage: "ords-m"
-		},*/
-		"ords-l": {
-            user: "hr",
-            password: "oracle",
-            connectString: "localhost:1521/pdb1",
-            poolMax: 44,
-            poolMin: 2,
-            poolIncrement: 5,
-            poolTimeout: 4,
-            requestValidationFunction: "wwv_flow_epg_include_modules.authorize",
-            defaultPage: "ords-l"
-		}
+            defaultPage: "ords"
+        }
     },
     tempParamMappings: {
     	"apex_authentication.logout" : {},
