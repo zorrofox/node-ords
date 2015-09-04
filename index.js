@@ -1,292 +1,183 @@
-var restify = require('restify');
+/* Copyright (c) 2015, Oracle and/or its affiliates. All rights reserved. */
+
+/******************************************************************************
+ *
+ * You may not use the identified files except in compliance with the Apache
+ * License, Version 2.0 (the "License.")
+ *
+ * You may obtain a copy of the License at
+ * http://www.apache.org/licenses/LICENSE-2.0.
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * NAME
+ *   index.js
+ *
+ * DESCRIPTION
+ *   The "main" file for the module.
+ *
+ *****************************************************************************/
+
+var async = require('async');
+var domain = require('domain');
+var http = require('http');
+var express = require('express');
+var bodyParser = require('body-parser');
 var oracledb = require('oracledb');
-var dbConfig = require('./dbconfig.js');
-//var metaConfig = require('./metaconfig.js');
+var morgan = require('morgan');
+var serveStatic = require('serve-static');
+var config = require('./config.js');
+var plsql = require('./plsql.js');
+//var cluster = require('cluster');
+//var numCPUs = 2;//require('os').cpus().length;
 
-var metaDataSql = "SELECT dbms_lob.substr(h.source, 4000, 1) source, h.source_type, h.handler_id " +
-	"FROM apex_rest_resource_handlers h, apex_rest_resource_templates t, apex_rest_resource_modules m " +
-	"WHERE t.template_id = h.template_id " +
-	"AND t.module_id = m.module_id " +
-	"AND h.workspace = :workspace " +
-	"AND h.method = :method " +
-	"AND h.uri_template = :template " +
-	"AND m.uri_prefix = :prefix";
-
-var metaDataSqlParam = "SELECT dbms_lob.substr(h.source, 4000, 1) source, h.source_type, h.handler_id " +
-	"FROM apex_rest_resource_handlers h, apex_rest_resource_templates t, apex_rest_resource_modules m " +
-	"WHERE t.template_id = h.template_id " +
-	"AND t.module_id = m.module_id " +
-	"AND h.workspace = :workspace " +
-	"AND h.method = :method " +
-	"AND h.uri_template LIKE :template || '/{%}'" +
-	"AND m.uri_prefix = :prefix";
-
-var paramsSql = "SELECT parameter_name, param_type " +
-	"FROM apex_rest_resource_parameters " +
-	"WHERE handler_id = :handler_id ";
-
-// Create REST Server
-var server = restify.createServer({
-	name: 'Node Oracle RESTfull',
-	version: '1.0.0'
-});
-
-var routeReg = /^\/([a-zA-Z0-9_\.~-]+)\/(.*)/;
+var serverDomain = domain.create();
+var urlEncodedParser = bodyParser.urlencoded({ extended: false });
+var openConnections = {};
+var app;
+var poolCache = {};
 
 
-server.use(restify.acceptParser(server.acceptable));
-server.use(restify.queryParser());
-server.use(restify.bodyParser());
+serverDomain.on('error', function(err) {
+    console.error('Domain error caught', err);
 
-oracledb.createPool(dbConfig, poolCB);
-
-
-server.listen(8081, function() {
-	console.log('%s listening at %s', server.name, server.url);
+    shutdown();
 });
 
 
+//Create Node cluster according to CPU cores
 
-function restServerError(res, err) {
-	err.message = err.custMessage + '  Error message: ' + err.message;
-	console.error(err);
-	res.send(503, err);
-}
+/*if (cluster.isMaster) {
+  // Fork workers.
+  for (var i = 0; i < numCPUs; i++) {
+    cluster.fork();
+  }
 
-var cb = {};
+  cluster.on('exit', function(worker, code, signal) {
+    console.log('worker ' + worker.process.pid + ' died');
+  });
 
-function poolCB(err, pool) {
+  cluster.on('listening', function(worker, address) {
+    console.log('A worker ' + worker.process.pid + ' is now connected to ' + address.address + ':' + address.port);
+  });
+} else {
+    var workerPid = cluster.worker.process.pid;
 
-	cb.err = err;
-	cb.pool = pool;
-	server.get(routeReg, handleRequest);
-	server.post(routeReg, handleRequest);
-	server.put(routeReg, handleRequest);
-	server.del(routeReg, handleRequest);
-}
+    serverDomain.run(createWebServer);
+}*/
 
-function releaseConnect(conn, res) {
-	conn.release(
-		function(err) {
-			if (err) {
-				err.custMessage = 'Connection release error';
-				restServerError(res, err);
-				return;
-			}
-		});
-}
+//Will only create one node
+var workerPid = process.pid;
+serverDomain.run(createWebServer);
 
-function getParamsFunction(req, param, type) {
-	if (type === 'Int' || type === 'Long' || type === 'Double') {
-		var val = req.params[param] ? Number(req.params[param]) : Number(req.header(param));
-	} else {
-		if (type === 'Timestamp') {
-			//var val = new Date(req.params[param]);
-			var val = req.params[param] ? req.params[param] : req.header(param);;
-		} else {
-			var val = req.params[param] ? req.params[param] : req.header(param);
+function createWebServer() {
+    app = express();
+
+    //app.use(morgan('combined')); //Add logging via morgan
+	
+	app.use(bodyParser.json()); // for parsing application/json
+	app.use(bodyParser.urlencoded({ extended: true })); // for parsing application/x-www-form-urlencoded
+	//app.use(multer()); // for parsing multipart/form-data
+
+    config.staticFileRepos.forEach(function(repo) {
+        app.use(repo.alias, serveStatic(repo.path));
+    });
+	
+	async.waterfall([
+		function(callback){
+			createConnectionPool(callback);
+		},
+		function(pools, callback){
+			poolCache = pools;
+			console.log(poolCache);
+		    app.use(urlEncodedParser, function(req, res, next) {
+		        plsql.requestHandler(req, res, next, workerPid, poolCache, serverDomain);
+		    });
 		}
-	}
-	return val;
+	], function(err){
+		if (err) throw err;
+	});
+
+    app.server = http.createServer(app);
+
+    app.server.listen(config.port);
+
+    app.server.on('connection', function(conn) {
+        var key = conn.remoteAddress + ':' + conn.reportPort;
+
+        openConnections[key] = conn;
+
+        conn.on('close', function() {
+            delete openConnections[key];
+        });
+    });
+
+    console.log("Server running at http://localhost:" + config.port);
 }
 
-function handleRequest(req, res, next) {
-	res.charSet('utf-8');
-	if (cb.err) {
-		err.custMessage = 'Create Oracle DB Pool for Meta Data Error! Error Message';
-		restServerError(res, err);
-		return;
+function createConnectionPool(callback) {
+	
+	var poolCallStack = {};
+	
+	
+	for (dad in config.dads){
+		var val = 'poolCallStack["' + dad + '"] = function(cb){' +
+				'oracledb.createPool(' +
+				'config.dads["' + dad + '"],' +
+				'serverDomain.bind(function(err, dadPool) {' +
+				'	if (err) return callback(err);' +
+				'	cb(null, dadPool);' +
+			 '}));' +
+			'};'
+		//console.log(val);
+		eval(val);
+		
 	}
-
-	if (req.params[0] !== undefined && req.params[1] !== undefined) {
-		var workspace = req.params[0].toUpperCase();
-		var uri = req.params[1].split('/');
-		var prefix = uri[0] + '/';
-		var template = uri[1];
-		var query = uri[2];
-		// Logic for tempalte end with slash but have no query strings
-		if (!query && req.params[1].substr(req.params[1].length - 1) === '/') template = template + '/';
-		var method = req.route.method.toUpperCase();
-
-	} else {
-		err.custMessage = 'Bad URL'
-		restServerError(res, err);
-		return;
-	}
-	var that = {};
-	//Connect for meta data
-	cb.pool.getConnection(
-		function(err, connection) {
-			if (err) {
-				err.custMessage = 'Oracle Pool Get Connect Error';
-				restServerError(res, err);
-				return;
-			}
-			//console.log(workspace + ' ' + method + ' ' + template + ' ' + prefix + ' ' + query);
-			var querySql = query ? metaDataSqlParam : metaDataSql;
-			connection.execute(
-				querySql , [workspace, method, template, prefix], {
-					outFormat: oracledb.OBJECT
-				},
-				function(err, result) {
-					/* Release the connection back to the connection pool */
-					connection.release(
-						function(err) {
-							if (err) {
-								err.custMessage = 'Meta data connection release error';
-								restServerError(res, err);
-								return;
-							}
-						});
-
-					if (err) {
-						err.errorSql = querySql;
-						err.sqlParams = [workspace, method, template, prefix];
-						err.custMessage = 'Meta data connect execution error';
-						restServerError(res, err);
-						return;
-					}
-
-					if (result.rows.length === 0 || result.rows.length === undefined) {
-						var err = {};
-						err.errorSql = querySql;
-						err.sqlParams = [workspace, method, template, prefix];
-						err.custMessage = 'Metadata no data found!';
-						restServerError(res, err);
-						return;
-					}
-
-					that.metaData = result.rows;
-
-					that.paramsConn();
+	
+	async.parallel(
+		poolCallStack,
+		function(err, result){
+			if(err) return callback(err);
+			callback(null, result);
+	});
+}
 
 
-				});
-		});
+function shutdown() {
+    console.log('Shutting down');
 
-	// Connect for Params
+    app.server.close(function () {
+        var terminatePools = [];
 
-	that.paramsConn = function() {
-		cb.pool.getConnection(
-			function(err, conn4params) {
-				if (err) {
-					err.custMessage = 'Get connect from pool for Params Execution SQL Error';
-					restServerError(res, err);
-					return;
-				}
-				conn4params.execute(paramsSql, [String(that.metaData[0].HANDLER_ID)], {
-					outFormat: oracledb.OBJECT
-				}, execFunc);
+        console.log('Web server closed');
 
-				function execFunc(err, result) {
-					releaseConnect(conn4params, res);
-					if (err) {
-						err.errorSql = paramsSql;
-						err.sqlParams = that.metaData[0].HANDLER_ID;
-						err.custMessage = 'Params Connect execution error';
-						restServerError(res, err);
-						return;
-					}
-					if (result) that.params = result.rows;
+        for (key in poolCache) {
+            terminatePools.push(function() {
+                poolCache[key].terminate(function(err) {
+                    if (err) {
+                        console.error('Error terminating pool for ' + key, err.message);
+                    }
 
-					that.dataConnect();
-				}
+                    console.log('Closed connection pool for ' + key);
+                });
+            });
+        }
 
-			});
-	};
+        if (terminatePools) {
+            async.parallel(terminatePools, function() {
+                process.exit(0);
+            });
+        } else {
+            process.exit(0);
+        }
+    });
 
-	// Connect for data
-
-	that.dataConnect = function() {
-		cb.pool.getConnection(
-			function(err, conn4data) {
-				if (err) {
-					err.custMessage = 'Get connect from pool for Data Execution SQL Error';
-					restServerError(res, err);
-					return;
-				}
-
-				var dataSql = that.metaData[0].SOURCE;
-				var valueArr = [query];
-				var valueObj = {};
-				var bindVar = {
-					out: {
-						type: oracledb.STRING,
-						dir: oracledb.BIND_OUT
-					}
-				};
-
-				if (that.params) {
-					for (i = 0; i < that.params.length; i++) {
-						var type;
-						if (that.params[i].PARAM_TYPE === 'String')
-							type = oracledb.STRING;
-						else {
-							if (that.params[i].PARAM_TYPE === 'Timestamp')
-								//TO-DO add some logic to support date value
-								type = oracledb.STRING;
-							else
-								type = oracledb.NUMBER;
-						}
-						bindVar[that.params[i].PARAMETER_NAME.toLowerCase()] = {
-							type: type,
-							dir: oracledb.BIND_IN,
-							val: getParamsFunction(req, that.params[i].PARAMETER_NAME, that.params[i].PARAM_TYPE)
-						};
-					}
-				}
-
-				if (that.metaData[0].SOURCE_TYPE === 'PL/SQL') {
-
-					dataSql = 'DECLARE vc owa.vc_arr; page htp.htbuf_arr; num INTEGER := 99999999; BEGIN owa.init_cgi_env(vc); htp.init; ' +
-						dataSql + 'htp.get_page(page, num); :out := \'\'; FOR i in 4..page.last LOOP :out := :out || page(i); END LOOP; END;';
-
-					conn4data.execute(
-						dataSql, bindVar,
-						execFunc);
-
-				} else {
-					conn4data.execute(
-						dataSql,
-						query ? valueArr : valueObj, {
-							outFormat: oracledb.OBJECT
-						},
-						execFunc);
-
-				}
-
-				function execFunc(err, result4data) {
-					conn4data.release(
-						function(err) {
-							if (err) {
-								err.custMessage = 'Data Connection Release Error';
-								restServerError(res, err);
-								return;
-							}
-						});
-
-					if (err) {
-						err.errorSql = dataSql;
-						err.sqlParams = bindVar;
-						err.custMessage = 'Data Connect execution error';
-						restServerError(res, err);
-						return;
-					}
-					if (result4data.rows)
-						res.send(result4data.rows);
-					if (result4data.outBinds) {
-						try {
-							res.send(JSON.parse(result4data.outBinds.out));
-						} catch (err) {
-							err.custMessage = 'Your PL/SQL function do not return a json body!';
-							restServerError(res, err);
-							return;
-						}
-
-					}
-				}
-			});
-	};
-
-	return next();
+    for (key in openConnections) {
+        openConnections[key].destroy();
+    }
 }
